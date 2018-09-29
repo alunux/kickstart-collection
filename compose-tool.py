@@ -2,42 +2,34 @@ import os, platform, subprocess, sys, shutil
 import hashlib
 import distro
 from azure.storage.blob import BlockBlobService, PublicAccess
+from pprint import pformat
 
 
 class ImageIso:
-    def __init__(self, ks, proj=None, volid=None, filename=None, fedoraver=None, bootname=None):
-        self.ks = self.flatten_ks(ks)
-        self.proj = proj
+    def __init__(self, ks, fedoraver=None, project=None, volid=None, bootname=None, filename=None):
+        self.proj = project
         self.volid = volid
         self.filename = filename
-        self.fedoraver = fedoraver
+        self.fedoraver = str(fedoraver)
         self.bootname = bootname
+        self.ks = self.flatten_ks(ks)
+
 
     def flatten_ks(self, ks):
-        run_ksflatten = f'ksflatten --config {ks} -o flat-{ks} --version F{self.fedoraver}'
+        run_ksflatten = f'ksflatten --config {ks} -o flat-main.ks --version F{self.fedoraver}'
         ret = subprocess.run(run_ksflatten, capture_output=True, text=True, shell=True, encoding='utf-8')
         if ret.returncode != 0:
             print(f'Error: {ret.stderr}')
             sys.exit(ret.returncode)
         
-        return f'flat-{ks}'
+        return 'flat-main.ks'
 
 
 class ComposeEnv:
-    def __init__(self, ks, fedoraver=None, march=None, chrootdir=None):
-        self.ks = ks
-        if fedoraver:
-            self.fedoraver = fedoraver
-        else:
-            self.fedoraver = distro.version()
-        if march:
-            self.march = march
-        else:
-            self.march = platform.machine()
-        if chrootdir:
-            self.chrootdir = chrootdir
-        else:
-            self.chrootdir = f'/var/lib/mock/fedora-{self.fedoraver}-{self.march}/root'
+    def __init__(self, fedoraver=None, march=None, chrootdir=None):
+        self.fedoraver = str(fedoraver) if fedoraver else distro.version()
+        self.march = march if march else platform.machine()
+        self.chrootdir = chrootdir if chrootdir else f'/var/lib/mock/fedora-{self.fedoraver}-{self.march}/root'
         self.resultdir = f'{self.chrootdir}/var/lmc'
         self.mock = f'mock -r fedora-{self.fedoraver}-{self.march}'
 
@@ -45,9 +37,10 @@ class ComposeEnv:
     def setup_builder(self):
         print('Setup builder environment...')
         
-        run_init_chroot = f'{self.mock} --root={self.chrootdir} --init'
+        run_init_chroot = f'{self.mock} --rootdir={self.chrootdir} --init'
         ret = subprocess.run(run_init_chroot, capture_output=True, text=True, shell=True, encoding='utf-8')
         if ret.returncode != 0:
+            print(f'CMD: {run_init_chroot}')
             print(f'ERROR: {ret.stderr}')
             sys.exit(ret.returncode)
 
@@ -58,7 +51,7 @@ class ComposeEnv:
                 'git'
         )
 
-        run_install_deps = f'{self.mock} --root={self.chrootdir} --install {builder_tools}'
+        run_install_deps = f'{self.mock} --rootdir={self.chrootdir} --install {builder_tools}'
         ret = subprocess.run(run_install_deps, capture_output=True, text=True, shell=True, encoding='utf-8')
         if ret.returncode != 0:
             print(f'ERROR: {ret.stderr}')
@@ -82,27 +75,24 @@ class ComposeEnv:
             print('ERROR: there is no chroot directory')
             sys.exit(-3)
 
-        shutil.move(iso.ks, self.chrootdir)
+        shutil.move('flat-main.ks', f'{self.chrootdir}/tmp')
 
         livemedia_creator = (
-            f'livemedia-creator --ks {iso.ks} --no-virt --resultdir /var/lmc --project {iso.proj}'
+            f'livemedia-creator --ks /tmp/{iso.ks} --no-virt --resultdir /var/lmc --project {iso.proj}'
             f' --make-iso --volid {iso.volid} --iso-only --iso-name {iso.filename} --releasever {iso.fedoraver}'
             f' --title {iso.bootname} --macboot'
         )
 
-        run_compose_iso = f'{self.mock} --root={self.chrootdir} --shell --old-chroot "{livemedia_creator}"'
-        ret = subprocess.run(run_compose_iso, capture_output=True, text=True, shell=True, encoding='utf-8')
+        run_compose_iso = f'{self.mock} --rootdir={self.chrootdir} --shell --old-chroot "{livemedia_creator}"'
+        ret = subprocess.run(run_compose_iso, stderr=subprocess.STDOUT, text=True, shell=True, encoding='utf-8')
         if ret.returncode != 0:
             print(f'ERROR: {ret.stderr}')
             sys.exit(ret.returncode)
 
-        if resultdir:
-            iso_save_dest = resultdir
-        else:
-            iso_save_dest = os.getcwd()
+        iso_save_dest = resultdir if resultdir else os.getcwd()
         
         if os.path.exists(iso_save_dest) and os.path.isdir(iso_save_dest):
-            shutil.move(self.resultdir + 'iso.filename', iso_save_dest)
+            shutil.copy2(f'{self.resultdir}/{iso.filename}', iso_save_dest)
         else:
             print(f'ERROR: {iso_save_dest} should be a directory and exists')
         
@@ -112,7 +102,7 @@ class ComposeEnv:
     def clean(self):
         print('Clean builder environment...')
         
-        run_init_chroot = f'{self.mock} --root={self.chrootdir} --clean'
+        run_init_chroot = f'{self.mock} --rootdir={self.chrootdir} --clean'
         ret = subprocess.run(run_init_chroot, capture_output=True, text=True, shell=True, encoding='utf-8')
         if ret.returncode != 0:
             print(f'ERROR: {ret.stderr}')
@@ -127,16 +117,33 @@ class AzureBlobService(BlockBlobService):
 
     def upload(self, container, filepath):
         self.create_blob_from_path(container, filepath.rsplit('/')[-1], filepath, progress_callback=self.progress_cb)
+        print('Uploaded!')
 
 
-def find_main_ks_cwd():
-    files = [f for f in os.listdir() if os.path.isfile(f)]
-    return 'main.ks' if 'main.ks' in files else None
+def find_main_ks(ksdir='.'):
+    if 'main.ks' in os.listdir(ksdir) and os.path.isfile(f'{ksdir}/main.ks'):
+        return f'{ksdir}/main.ks'
 
 
 def main():
-    print(find_main_ks_cwd())
+    img = ImageIso(
+        ks=find_main_ks('gnome-minimal-spin'),
+        fedoraver=28,
+        project='Fedora-GNOME-Min-Live',
+        volid='Fedora-GNOME-Min-28',
+        bootname='Fedora-GNOME-Min-Live',
+        filename='Fedora-GNOME-Min-Live-28.iso'
+    )
 
+    builder = ComposeEnv(
+        fedoraver=28,
+        march='x86_64'
+    )
+
+    builder.setup_builder()
+    builder.compose_iso(img)
+    builder.clean()
+    
 
 if __name__ == '__main__':
     main()
