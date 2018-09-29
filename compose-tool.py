@@ -2,11 +2,19 @@ import os, platform, subprocess, sys, shutil
 import hashlib
 import distro
 from azure.storage.blob import BlockBlobService, PublicAccess
-from pprint import pformat
+
+
+SET_VER = distro.version()
+SET_ARCH = platform.machine()
+SET_PROJECT = 'Fedora-Custom-Live'
+SET_VOLID = f'{SET_PROJECT}-{SET_VER}'
+SET_BOOT = SET_PROJECT
+SET_ISO = f'{SET_PROJECT}-{SET_VER}.iso'
 
 
 class ImageIso:
-    def __init__(self, ks, fedoraver=None, project=None, volid=None, bootname=None, filename=None):
+    def __init__(self, ks, fedoraver=SET_VER, project=SET_PROJECT, volid=SET_VOLID,
+                 bootname=SET_BOOT, filename=SET_ISO):
         self.proj = project
         self.volid = volid
         self.filename = filename
@@ -26,9 +34,9 @@ class ImageIso:
 
 
 class ComposeEnv:
-    def __init__(self, fedoraver=None, march=None, chrootdir=None):
-        self.fedoraver = str(fedoraver) if fedoraver else distro.version()
-        self.march = march if march else platform.machine()
+    def __init__(self, fedoraver=SET_VER, march=SET_ARCH, chrootdir=None):
+        self.fedoraver = str(fedoraver)
+        self.march = march
         self.chrootdir = chrootdir if chrootdir else f'/var/lib/mock/fedora-{self.fedoraver}-{self.march}/root'
         self.resultdir = f'{self.chrootdir}/var/lmc'
         self.mock = f'mock -r fedora-{self.fedoraver}-{self.march}'
@@ -121,8 +129,9 @@ class AzureBlobService(BlockBlobService):
 
 
 def find_main_ks(ksdir='.'):
-    if 'main.ks' in os.listdir(ksdir) and os.path.isfile(f'{ksdir}/main.ks'):
-        return f'{ksdir}/main.ks'
+    mainks = 'main.ks'
+    if mainks in os.listdir(ksdir) and os.path.isfile(f'{ksdir}/{mainks}'):
+        return f'{ksdir}/{mainks}'
 
 
 def main():
