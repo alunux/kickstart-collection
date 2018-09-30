@@ -104,7 +104,9 @@ class ComposeEnv:
         else:
             print(f'ERROR: {iso_save_dest} should be a directory and exists')
         
-        print(f'ISO has been composed.\nResult: {iso_save_dest}/{iso.filename}')
+        result = f'{iso_save_dest}/{iso.filename}'
+        print(f'ISO has been composed.\nResult: {result}')
+        return result
 
 
     def clean(self):
@@ -150,9 +152,14 @@ def main():
     )
 
     builder.setup_builder()
-    builder.compose_iso(img)
+    iso_result = builder.compose_iso(img)
     builder.clean()
     
+    az_acc = os.getenv('AZURE_STORAGE_ACC')
+    az_acc_key = os.getenv('AZURE_STORAGE_ACC_KEY')
+    az_blob = AzureBlobService(account_name=az_acc, account_key=az_acc_key)
+    az_blob.upload('myiso', iso_result)
+
 
 if __name__ == '__main__':
     main()
